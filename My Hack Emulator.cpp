@@ -1,4 +1,4 @@
-#include <windows.h>
+﻿#include <windows.h>
 #include <cstdint>
 #include <fstream>
 #include <iostream>
@@ -8,6 +8,8 @@
 #include <cstdio>
 #include <cstring>
 #include <bitset>
+#include <chrono>
+
 // Types
 using i16 = int16_t;
 
@@ -28,10 +30,9 @@ i16 PC = 0;
 i16 A = 0;
 i16 D = 0;
 bool updatedScreen = false;
-HWND debugWindow = nullptr;
-HWND debugEditBox = nullptr;
 HWND clearButton = nullptr;
 HWND stepButton = nullptr;
+std::atomic<int> instructionsPerSecond = 1000000;  // Default: 1 million IPS
 
 // Emulator control
 std::atomic<bool> paused = false;
@@ -55,115 +56,9 @@ const char* compTable[2][64] = {};
 const char* jumpTable[8] = {
     "", "JGT", "JEQ", "JGE", "JLT", "JNE", "JLE", "JMP"
 };
-void DebugInstruction(int16_t instruction, uint16_t PC) {
-    static bool initialized = false;
-    if (!initialized) {
-        // a = 0 (A used)
-        compTable[0][42] = "0";
-        compTable[0][63] = "1";
-        compTable[0][58] = "-1";
-        compTable[0][12] = "D";
-        compTable[0][48] = "A";
-        compTable[0][13] = "!D";
-        compTable[0][49] = "!A";
-        compTable[0][15] = "-D";
-        compTable[0][51] = "-A";
-        compTable[0][31] = "D+1";
-        compTable[0][55] = "A+1";
-        compTable[0][14] = "D-1";
-        compTable[0][50] = "A-1";
-        compTable[0][2] = "D+A";
-        compTable[0][19] = "D-A";
-        compTable[0][7] = "A-D";
-        compTable[0][0] = "D&A";
-        compTable[0][21] = "D|A";
-
-        // a = 1 (M used)
-        compTable[1][42] = "0";
-        compTable[1][63] = "1";
-        compTable[1][58] = "-1";
-        compTable[1][12] = "D";
-        compTable[1][48] = "M";
-        compTable[1][13] = "!D";
-        compTable[1][49] = "!M";
-        compTable[1][15] = "-D";
-        compTable[1][51] = "-M";
-        compTable[1][31] = "D+1";
-        compTable[1][55] = "M+1";
-        compTable[1][14] = "D-1";
-        compTable[1][50] = "M-1";
-        compTable[1][2] = "D+M";
-        compTable[1][19] = "D-M";
-        compTable[1][7] = "M-D";
-        compTable[1][0] = "D&M";
-        compTable[1][21] = "D|M";
-
-        initialized = true;
-    }
-
-    char buffer[64];
-
-    if (instruction >= 0) {
-        // A-instruction
-        sprintf_s(buffer, sizeof(buffer), "@%d", instruction & 0x7FFF);
-    }
-    else {
-        // C-instruction
-        uint8_t a = (instruction >> 12) & 0b1;
-        uint8_t comp = (instruction >> 6) & 0b111111;
-        uint8_t dest = (instruction >> 3) & 0b111;
-        uint8_t jump = instruction & 0b111;
-
-        const char* compStr = (comp < 64) ? compTable[a][comp] : "";
-        const char* jumpStr = jumpTable[jump];
-
-        char destStr[4] = "";
-        if (dest & 0b100) strcat_s(destStr, sizeof(destStr), "A");
-        if (dest & 0b010) strcat_s(destStr, sizeof(destStr), "D");
-        if (dest & 0b001) strcat_s(destStr, sizeof(destStr), "M");
-
-        if (destStr[0] && jumpStr[0])
-            sprintf_s(buffer, sizeof(buffer), "%s=%s;%s", destStr, compStr, jumpStr);
-        else if (destStr[0])
-            sprintf_s(buffer, sizeof(buffer), "%s=%s", destStr, compStr);
-        else if (jumpStr[0])
-            sprintf_s(buffer, sizeof(buffer), "%s;%s", compStr, jumpStr);
-        else
-            sprintf_s(buffer, sizeof(buffer), "%s", compStr);
-    }
-
-    // Get RAM[A] safely
-    int16_t ramA = (A >= 0 && A < RAM_SIZE) ? RAM[A] : 0;
-
-    char full[160];
-    sprintf_s(full, sizeof(full),
-        "PC: %d | 0x%04X => %-6s | A: %6d | D: %6d | RAM[A]: %6d\n",
-        PC, instruction, buffer, A, D, ramA);
-
-    //OutputDebugStringA(full);  // Console (optional)
-
-    // Append to debug window
-    if (debugEditBox) {
-        int len = GetWindowTextLengthA(debugEditBox);
-
-        // Limit debug window to prevent memory bloat
-        const int MAX_DEBUG_TEXT = 10000; // chars
-        if (len > MAX_DEBUG_TEXT) {
-            SetWindowTextA(debugEditBox, "(Truncated...)\r\n");
-            len = GetWindowTextLengthA(debugEditBox);
-            SendMessageA(debugEditBox, EM_SETSEL, len, len);
-        }
-
-        SendMessageA(debugEditBox, EM_SETSEL, len, len);
-        SendMessageA(debugEditBox, EM_REPLACESEL, FALSE, (LPARAM)full);
-        SendMessageA(debugEditBox, EM_SCROLLCARET, 0, 0);
-    }
-}
-
 
 void UpdateScreen() {
     if (!updatedScreen) return;
-
     if (updatedScreenIndex < 0 || updatedScreenIndex >= SCREEN_WORDS) return;
 
     uint16_t word = RAM[16384 + updatedScreenIndex];
@@ -179,7 +74,6 @@ void UpdateScreen() {
             framebuffer[y][x] = pixelOn ? 0xFF000000 : 0xFFFFFFFF;
         }
     }
-
     updatedScreen = false;
     updatedScreenIndex = -1;
     InvalidateRect(hwnd, nullptr, FALSE);
@@ -191,7 +85,6 @@ void UpdateScreen() {
 
 void executeNextInstruction() {
     i16 instruction = ROM[PC];
-    //DebugInstruction(instruction, PC);
     if ((instruction & 0b1110000000000000) == 0b1110000000000000) {
         // Valid C-instruction
         bool a_bit = (instruction >> 12) & 0b0000000000000001;
@@ -382,17 +275,35 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
     }
     return DefWindowProc(hwnd, uMsg, wParam, lParam);
 }
-
 DWORD WINAPI EmuThread(LPVOID) {
+    auto lastTime = std::chrono::high_resolution_clock::now();
+    int executed = 0;
+
     while (running) {
         if (!paused) {
-            UpdateScreen();
             executeNextInstruction();
+            UpdateScreen();
+            executed++;
+
+            auto now = std::chrono::high_resolution_clock::now();
+            auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(now - lastTime).count();
+
+            if (elapsed >= 1'000'000) {
+                executed = 0;
+                lastTime = now;
+            }
+            else {
+                std::this_thread::sleep_for(std::chrono::microseconds(0));
+            }
         }
-        Sleep(0);
+        else {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
     }
+
     return 0;
 }
+
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
     // Parse command line arguments
@@ -434,15 +345,23 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
         for (int x = 0; x < SCREEN_WIDTH; ++x) {
             framebuffer[y][x] = 0xFFFFFFFF;  // White
         }
-    }    //CreateDebugWindow(hInstance);
+    }
     CreateThread(nullptr, 0, EmuThread, nullptr, 0, nullptr);
 
     MSG msg = {};
+    char title[128];
     while (running && GetMessage(&msg, nullptr, 0, 0)) {
         TranslateMessage(&msg);
         DispatchMessage(&msg);
-    }
 
+        static int lastIPS = -1;
+        int currentIPS = instructionsPerSecond;
+        if (currentIPS != lastIPS) {
+            snprintf(title, sizeof(title), "My HACK Emulator");
+            SetWindowTextA(hwnd, title);
+            lastIPS = currentIPS;
+        }
+    }
     MessageBox(hwnd, L"Terminated", L"Emulator", MB_OK | MB_ICONINFORMATION);
     return 0;
 }
