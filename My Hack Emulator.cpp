@@ -16,6 +16,10 @@ constexpr int ROM_SIZE = 32768;
 constexpr int RAM_SIZE = 24577;
 constexpr int SCREEN_WIDTH = 512;
 constexpr int SCREEN_HEIGHT = 256;
+constexpr int SCREEN_WORDS = SCREEN_WIDTH * SCREEN_HEIGHT / 16; // 512*256 / 16 = 8192
+uint16_t screenShadow[SCREEN_WORDS] = {};  // start with all zeros
+int updatedScreenIndex = -1;  // index into RAM, not full screen update
+
 // Global memory
 i16 ROM[ROM_SIZE] = {};
 i16 RAM[RAM_SIZE] = {};
@@ -158,32 +162,36 @@ void DebugInstruction(int16_t instruction, uint16_t PC) {
 
 
 void UpdateScreen() {
-    if (updatedScreen) {
+    if (!updatedScreen) return;
 
+    if (updatedScreenIndex < 0 || updatedScreenIndex >= SCREEN_WORDS) return;
 
-        i16 screenBase = 16384;
+    uint16_t word = RAM[16384 + updatedScreenIndex];
+    if (screenShadow[updatedScreenIndex] != word) {
+        screenShadow[updatedScreenIndex] = word;
 
-        for (i16 y = 0; y < SCREEN_HEIGHT; ++y) {
-            for (i16 wordIndex = 0; wordIndex < SCREEN_WIDTH / 16; ++wordIndex) {
-                i16  ramIndex = screenBase + y * (SCREEN_WIDTH / 16) + wordIndex;
-                i16 word = RAM[ramIndex];
+        int y = updatedScreenIndex / 32;
+        int wordIndex = updatedScreenIndex % 32;
 
-                for (i16 bit = 0; bit < 16; ++bit) {
-                    i16  x = wordIndex * 16 + (15 - bit);  // leftmost bit is highest bit
-                    bool pixelOn = ((int16_t)word >> bit) & 1;  // cast to uint16_t for logical shift
-                    framebuffer[y][x] = pixelOn ? 0xFF000000 : 0xFFFFFFFF;  // black if bit set, else white
-                }
-            }
+        for (int bit = 0; bit < 16; ++bit) {
+            int x = wordIndex * 16 + bit;
+            bool pixelOn = (word >> bit) & 1;
+            framebuffer[y][x] = pixelOn ? 0xFF000000 : 0xFFFFFFFF;
         }
-
-        InvalidateRect(hwnd, nullptr, FALSE);
     }
+
+    updatedScreen = false;
+    updatedScreenIndex = -1;
+    InvalidateRect(hwnd, nullptr, FALSE);
 }
+
+
+
 
 
 void executeNextInstruction() {
     i16 instruction = ROM[PC];
-    DebugInstruction(instruction, PC);
+    //DebugInstruction(instruction, PC);
     if ((instruction & 0b1110000000000000) == 0b1110000000000000) {
         // Valid C-instruction
         bool a_bit = (instruction >> 12) & 0b0000000000000001;
@@ -207,13 +215,19 @@ void executeNextInstruction() {
         // Destination
         if (dest_bits & 0b0000000000000001) {
             RAM[A] = output;
-            if (A >= 16384 && A <= 24576) {
-                updatedScreen = TRUE;
-            }
-            else {
-                updatedScreen = FALSE;
+
+            if (dest_bits & 0b0000000000000001) {
+                RAM[A] = output;
+
+                if (A >= 16384 && A < 24576) {
+                    int screenIndex = A - 16384;
+                    updatedScreenIndex = screenIndex;
+                    updatedScreen = true;
+                }
+
             }
         }
+
 
         if (dest_bits & 0b0000000000000100) {
             A = output;
@@ -244,83 +258,6 @@ void executeNextInstruction() {
     PC++;
     //if (PC >= ROM_SIZE) PC = 0;
 }
-
-
-LRESULT CALLBACK DebugWindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
-    switch (uMsg) {
-    case WM_SIZE:
-        if (debugEditBox) {
-            MoveWindow(debugEditBox, 0, 0, LOWORD(lParam), HIWORD(lParam) - 40, TRUE);
-        }
-        if (clearButton) {
-            MoveWindow(clearButton, LOWORD(lParam) - 85, HIWORD(lParam) - 35, 80, 30, TRUE);
-        }
-        return 0;
-
-    case WM_COMMAND:
-        if (LOWORD(wParam) == 1 && debugEditBox) { // Clear button
-            SetWindowTextA(debugEditBox, "");
-            PC = 0;
-            const char* resetMsg = "PC reset to 0\n";
-            int len = GetWindowTextLengthA(debugEditBox);
-            SendMessageA(debugEditBox, EM_SETSEL, len, len);
-            SendMessageA(debugEditBox, EM_REPLACESEL, FALSE, (LPARAM)resetMsg);
-            SendMessageA(debugEditBox, EM_SCROLLCARET, 0, 0);
-            return 0;
-        }
-        else if (LOWORD(wParam) == 2) { // Step button
-            if (!paused) paused = true; // pause automatic execution if running
-            // Run one instruction step (mimic EmuThread loop for one cycle)
-            UpdateScreen();
-            executeNextInstruction();
-
-            // Optionally, add a line to debug window so user knows step happened
-            const char* stepMsg = "Step executed\n";
-            int len = GetWindowTextLengthA(debugEditBox);
-            SendMessageA(debugEditBox, EM_SETSEL, len, len);
-            SendMessageA(debugEditBox, EM_REPLACESEL, FALSE, (LPARAM)stepMsg);
-            SendMessageA(debugEditBox, EM_SCROLLCARET, 0, 0);
-            return 0;
-        }
-        break;
-    }
-    return DefWindowProc(hwnd, uMsg, wParam, lParam);
-}
-
-void CreateDebugWindow(HINSTANCE hInstance) {
-    WNDCLASS wcDebug = {};
-    wcDebug.lpfnWndProc = DebugWindowProc;
-    wcDebug.hInstance = hInstance;
-    wcDebug.lpszClassName = L"DebugWindowClass";
-    RegisterClass(&wcDebug);
-
-    debugWindow = CreateWindowEx(
-        0, L"DebugWindowClass", L"Debug Output",
-        WS_OVERLAPPEDWINDOW | WS_VISIBLE,
-        CW_USEDEFAULT, CW_USEDEFAULT, 640, 480,
-        nullptr, nullptr, hInstance, nullptr);
-
-    debugEditBox = CreateWindowEx(
-        WS_EX_CLIENTEDGE, L"EDIT", L"",
-        WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY,
-        0, 0, 620, 420,
-        debugWindow, nullptr, hInstance, nullptr);
-
-    clearButton = CreateWindow(
-        L"BUTTON", L"RESET",
-        WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_DEFPUSHBUTTON,
-        540, 430, 80, 30,
-        debugWindow, (HMENU)1, hInstance, nullptr);
-
-    stepButton = CreateWindow(
-        L"BUTTON", L"Step",
-        WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_DEFPUSHBUTTON,
-        440, 430, 80, 30,  // Positioned next to Clear button
-        debugWindow, (HMENU)2, hInstance, nullptr);
-
-}
-
-
 
 bool LoadROM(const char* filename) {
     std::ifstream file;
@@ -403,16 +340,28 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
     case WM_KEYDOWN:
         takeKeyboardInput(uMsg, wParam);
 
-        if ((GetKeyState(VK_CONTROL) & 0x8000) && wParam == 'C') {
-            running = false;
-            PostQuitMessage(0);
-            return 0;
+        if ((GetKeyState(VK_CONTROL) & 0x8000)) {
+            switch (wParam) {
+            case 'C':  // Ctrl+C = exit
+                running = false;
+                PostQuitMessage(0);
+                return 0;
+
+            case 'R':  // Ctrl+R = Reset PC
+                PC = 0;
+                MessageBeep(MB_OK);  // Optional feedback
+                return 0;
+            }
         }
-        else if ((wParam == VK_SHIFT) || (wParam == VK_LSHIFT) || (wParam == VK_RSHIFT)) { // Alt key for pause
+
+        // Toggle pause with Shift
+        if ((wParam == VK_SHIFT) || (wParam == VK_LSHIFT) || (wParam == VK_RSHIFT)) {
             paused = !paused;
             return 0;
         }
+
         return 0;
+
 
     case WM_KEYUP:
         takeKeyboardInput(uMsg, wParam);
@@ -440,7 +389,7 @@ DWORD WINAPI EmuThread(LPVOID) {
             UpdateScreen();
             executeNextInstruction();
         }
-        //Sleep(1);
+        Sleep(0);
     }
     return 0;
 }
@@ -473,7 +422,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
 
     hwnd = CreateWindowEx(
         0, CLASS_NAME, L"My HACK Emulator",
-        WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 1024, 512,
+        WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 1000, 700,
         nullptr, nullptr, hInstance, nullptr);
 
     if (!hwnd) return 1;
@@ -481,8 +430,11 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
 
 
     InitBitmapInfo();
-    InitBitmapInfo();
-    //CreateDebugWindow(hInstance);
+    for (int y = 0; y < SCREEN_HEIGHT; ++y) {
+        for (int x = 0; x < SCREEN_WIDTH; ++x) {
+            framebuffer[y][x] = 0xFFFFFFFF;  // White
+        }
+    }    //CreateDebugWindow(hInstance);
     CreateThread(nullptr, 0, EmuThread, nullptr, 0, nullptr);
 
     MSG msg = {};
