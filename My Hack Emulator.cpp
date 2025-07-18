@@ -193,7 +193,7 @@ bool LoadROM(const char* filename) {
 void takeKeyboardInput(UINT msg, WPARAM wParam) {
     if (msg == WM_KEYDOWN) {
         switch (wParam) {
-        case VK_RETURN:       RAM[RAM_SIZE - 1 - 1] = 128; break;
+        case VK_RETURN:       RAM[RAM_SIZE - 1] = 128; break;
         case VK_BACK:         RAM[RAM_SIZE - 1] = 129; break;
         case VK_LEFT:         RAM[RAM_SIZE - 1] = 130; break;
         case VK_UP:           RAM[RAM_SIZE - 1] = 131; break;
