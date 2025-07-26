@@ -42,7 +42,8 @@ std::atomic<bool> running = true;
 HWND hwnd = nullptr;
 BITMAPINFO bmi = {};
 uint32_t framebuffer[SCREEN_HEIGHT][SCREEN_WIDTH] = {};
-
+bool fullscreen = false;
+RECT windowedRect = { 0,0,1000,700 };
 void InitBitmapInfo() {
     bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
     bmi.bmiHeader.biWidth = SCREEN_WIDTH;
@@ -108,16 +109,10 @@ void executeNextInstruction() {
         // Destination
         if (dest_bits & 0b0000000000000001) {
             RAM[A] = output;
-
-            if (dest_bits & 0b0000000000000001) {
-                RAM[A] = output;
-
-                if (A >= 16384 && A < 24576) {
-                    int screenIndex = A - 16384;
-                    updatedScreenIndex = screenIndex;
-                    updatedScreen = true;
-                }
-
+            if (A >= 16384 && A < 24576) {
+                int screenIndex = A - 16384;
+                updatedScreenIndex = screenIndex;
+                updatedScreen = true;
             }
         }
 
@@ -232,6 +227,32 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
 
     case WM_KEYDOWN:
         takeKeyboardInput(uMsg, wParam);
+        if (wParam == VK_F11) {
+            fullscreen = !fullscreen;
+            if (fullscreen) {
+                // Save windowed size and position
+                GetWindowRect(hwnd, &windowedRect);
+                SetWindowLong(hwnd, GWL_STYLE, WS_POPUP | WS_VISIBLE);
+                MONITORINFO mi = { sizeof(mi) };
+                if (GetMonitorInfo(MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY), &mi)) {
+                    SetWindowPos(hwnd, HWND_TOP,
+                        mi.rcMonitor.left, mi.rcMonitor.top,
+                        mi.rcMonitor.right - mi.rcMonitor.left,
+                        mi.rcMonitor.bottom - mi.rcMonitor.top,
+                        SWP_FRAMECHANGED | SWP_NOOWNERZORDER | SWP_NOZORDER);
+                }
+            }
+            else {
+                // Restore windowed style and position
+                SetWindowLong(hwnd, GWL_STYLE, WS_OVERLAPPEDWINDOW | WS_VISIBLE);
+                SetWindowPos(hwnd, HWND_NOTOPMOST,
+                    windowedRect.left, windowedRect.top,
+                    windowedRect.right - windowedRect.left,
+                    windowedRect.bottom - windowedRect.top,
+                    SWP_FRAMECHANGED | SWP_NOOWNERZORDER | SWP_SHOWWINDOW);
+            }
+            return 0;
+        }
 
         if ((GetKeyState(VK_CONTROL) & 0x8000)) {
             switch (wParam) {
@@ -242,7 +263,11 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
 
             case 'R':  // Ctrl+R = Reset PC
                 PC = 0;
-                MessageBeep(MB_OK);  // Optional feedback
+                for (int y = 0; y < SCREEN_HEIGHT; ++y) {
+                    for (int x = 0; x < SCREEN_WIDTH; ++x) {
+                        framebuffer[y][x] = 0xFFFFFFFF;  // White
+                    }
+                }
                 return 0;
             }
         }
@@ -259,13 +284,21 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
     case WM_KEYUP:
         takeKeyboardInput(uMsg, wParam);
         return 0;
-
+    case WM_SIZE: {
+        InvalidateRect(hwnd, nullptr, FALSE);
+        return 0;
+    }
     case WM_PAINT: {
         PAINTSTRUCT ps;
         HDC hdc = BeginPaint(hwnd, &ps);
 
+        RECT rc;
+        GetClientRect(hwnd, &rc);
+        int clientWidth = rc.right - rc.left;
+        int clientHeight = rc.bottom - rc.top;
+
         StretchDIBits(hdc,
-            0, 0, SCREEN_WIDTH * 2, SCREEN_HEIGHT * 2,
+            0, 0, clientWidth, clientHeight,
             0, 0, SCREEN_WIDTH, SCREEN_HEIGHT,
             framebuffer, &bmi, DIB_RGB_COLORS, SRCCOPY);
 
