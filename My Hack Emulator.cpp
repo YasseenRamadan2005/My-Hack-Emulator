@@ -184,38 +184,46 @@ bool LoadROM(const char* filename) {
     return false;
 }
 
-
-void takeKeyboardInput(UINT msg, WPARAM wParam) {
+void takeKeyboardInput(UINT msg, WPARAM wParam, LPARAM lParam) {
     if (msg == WM_KEYDOWN) {
         switch (wParam) {
-        case VK_RETURN:       RAM[RAM_SIZE - 1] = 128; break;
-        case VK_BACK:         RAM[RAM_SIZE - 1] = 129; break;
-        case VK_LEFT:         RAM[RAM_SIZE - 1] = 130; break;
-        case VK_UP:           RAM[RAM_SIZE - 1] = 131; break;
-        case VK_RIGHT:        RAM[RAM_SIZE - 1] = 132; break;
-        case VK_DOWN:         RAM[RAM_SIZE - 1] = 133; break;
-        case VK_HOME:         RAM[RAM_SIZE - 1] = 134; break;
-        case VK_END:          RAM[RAM_SIZE - 1] = 135; break;
-        case VK_PRIOR:        RAM[RAM_SIZE - 1] = 136; break; // Page Up
-        case VK_NEXT:         RAM[RAM_SIZE - 1] = 137; break; // Page Down
-        case VK_INSERT:       RAM[RAM_SIZE - 1] = 138; break;
-        case VK_DELETE:       RAM[RAM_SIZE - 1] = 139; break;
-        case VK_ESCAPE:       RAM[RAM_SIZE - 1] = 140; break;
-        case VK_F1:  case VK_F2:  case VK_F3:  case VK_F4:
-        case VK_F5:  case VK_F6:  case VK_F7:  case VK_F8:
-        case VK_F9:  case VK_F10: case VK_F11: case VK_F12:
+        case VK_RETURN:   RAM[RAM_SIZE - 1] = 128; return;
+        case VK_BACK:     RAM[RAM_SIZE - 1] = 129; return;
+        case VK_LEFT:     RAM[RAM_SIZE - 1] = 130; return;
+        case VK_UP:       RAM[RAM_SIZE - 1] = 131; return;
+        case VK_RIGHT:    RAM[RAM_SIZE - 1] = 132; return;
+        case VK_DOWN:     RAM[RAM_SIZE - 1] = 133; return;
+        case VK_HOME:     RAM[RAM_SIZE - 1] = 134; return;
+        case VK_END:      RAM[RAM_SIZE - 1] = 135; return;
+        case VK_PRIOR:    RAM[RAM_SIZE - 1] = 136; return;
+        case VK_NEXT:     RAM[RAM_SIZE - 1] = 137; return;
+        case VK_INSERT:   RAM[RAM_SIZE - 1] = 138; return;
+        case VK_DELETE:   RAM[RAM_SIZE - 1] = 139; return;
+        case VK_ESCAPE:   RAM[RAM_SIZE - 1] = 140; return;
+
+        case VK_F1: case VK_F2: case VK_F3: case VK_F4:
+        case VK_F5: case VK_F6: case VK_F7: case VK_F8:
+        case VK_F9: case VK_F10: case VK_F11: case VK_F12:
             RAM[RAM_SIZE - 1] = 141 + (wParam - VK_F1);
-            break;
-        default:
-            if (wParam < 128)
-                RAM[RAM_SIZE - 1] = static_cast<i16>(wParam);
-            break;
+            return;
+        }
+
+        BYTE keyboardState[256];
+        GetKeyboardState(keyboardState);
+
+        WORD translatedChar;
+        if (ToAscii(static_cast<UINT>(wParam), (lParam >> 16) & 0xFF, keyboardState, &translatedChar, 0) == 1) {
+            if (translatedChar >= 32 && translatedChar <= 126) {
+                RAM[RAM_SIZE - 1] = static_cast<i16>(translatedChar);
+            }
         }
     }
     else if (msg == WM_KEYUP) {
         RAM[RAM_SIZE - 1] = 0;
     }
 }
+
+
 
 
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
@@ -226,7 +234,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         return 0;
 
     case WM_KEYDOWN:
-        takeKeyboardInput(uMsg, wParam);
+        takeKeyboardInput(uMsg, wParam, lParam);
         if (wParam == VK_F11) {
             fullscreen = !fullscreen;
             if (fullscreen) {
@@ -261,14 +269,18 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
                 PostQuitMessage(0);
                 return 0;
 
-            case 'R':  // Ctrl+R = Reset PC
+            case 'R':
                 PC = 0;
-                for (int y = 0; y < SCREEN_HEIGHT; ++y) {
-                    for (int x = 0; x < SCREEN_WIDTH; ++x) {
-                        framebuffer[y][x] = 0xFFFFFFFF;  // White
-                    }
-                }
+                A = 0;
+                D = 0;
+                memset(RAM, 0, sizeof(RAM));
+                memset(screenShadow, 0, sizeof(screenShadow));
+                for (int y = 0; y < SCREEN_HEIGHT; ++y)
+                    for (int x = 0; x < SCREEN_WIDTH; ++x)
+                        framebuffer[y][x] = 0xFFFFFFFF;
+                InvalidateRect(hwnd, nullptr, FALSE);
                 return 0;
+
             }
         }
 
@@ -282,7 +294,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
 
 
     case WM_KEYUP:
-        takeKeyboardInput(uMsg, wParam);
+        takeKeyboardInput(uMsg, wParam, lParam);
         return 0;
     case WM_SIZE: {
         InvalidateRect(hwnd, nullptr, FALSE);
